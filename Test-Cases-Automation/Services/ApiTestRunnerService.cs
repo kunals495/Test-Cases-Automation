@@ -27,11 +27,14 @@ namespace Test_Cases_Automation.Services
             {
                 if (string.IsNullOrWhiteSpace(sheet.Cells[i, 10].Text) || (sheet.Cells[i, 10].Text).Equals("FAIL", StringComparison.Ordinal))
                 {
+                    if (!string.IsNullOrWhiteSpace(sheet.Cells[i,1].Text))
                     total++;
+                    
                 }
+                
             }
 
-            Console.WriteLine(total);
+            Console.WriteLine("totalNumber of Rows:" + total);
 
             var token = await LoginAndGetToken();
 
@@ -51,9 +54,12 @@ namespace Test_Cases_Automation.Services
                 if (string.IsNullOrWhiteSpace(sheet.Cells[r, 10].Text) || (sheet.Cells[r, 10].Text).Equals("FAIL", StringComparison.Ordinal))
                 {
                     var endpoint = sheet.Cells[r, 1].Text;
+                    Console.WriteLine(endpoint);
                     var method = sheet.Cells[r, 2].Text;
+                    Console.WriteLine(method);
                     var bodyJson = sheet.Cells[r, 4].Text;
                     var payloadType = sheet.Cells[r, 5].Text;
+                    Console.WriteLine(payloadType);
                     var expectedStatus = int.Parse(sheet.Cells[r, 6].Text);
 
                     var result = await CallApi(endpoint, method, bodyJson, token, payloadType);
@@ -65,6 +71,8 @@ namespace Test_Cases_Automation.Services
 
                     // Live SSE
                     done++;
+                    
+                    Console.WriteLine("Done:"+done);
                     var rowResponse = new
                     {
                         index = r - 2,
@@ -176,7 +184,7 @@ namespace Test_Cases_Automation.Services
 
                 request.AddHeader("Authorization", "Bearer " + token);
 
-                if (payloadType.Equals("file", StringComparison.OrdinalIgnoreCase))
+                if (payloadType.Equals("file", StringComparison.OrdinalIgnoreCase) || payloadType.Equals("formfile", StringComparison.OrdinalIgnoreCase))
                 {
                     // Body contains file path
                     string filePath = jsonBody
