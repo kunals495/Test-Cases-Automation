@@ -1,96 +1,109 @@
-﻿//using Newtonsoft.Json;
-//using OpenAI.Chat;
-//using System.ClientModel;
-//using static Test_Cases_Automation.Controllers.TestController;
+﻿using Google.GenAI;
+using Google.GenAI.Types;
+using Newtonsoft.Json;
+using static Test_Cases_Automation.Controllers.TestController; 
 
-//namespace Test_Cases_Automation.Services
-//{
-//    public class CopilotAIService
-//    {
-//        private readonly ChatClient _chatClient;
+namespace Test_Cases_Automation.Services
+{
+    public class CopilotAIService
+    {
+        private readonly Client _client;
 
-//        public CopilotAIService(string apiKey)
-//        {
-//            // Initialize with API key
-//            _chatClient = new ChatClient("gpt-4", new ApiKeyCredential(apiKey));
-//        }
+        public CopilotAIService(string apiKey)
+        {
+            _client = new Client(apiKey: apiKey);
+        }
 
-//        public class AIGeneratedTestCase
-//        {
-//            public string TestCaseName { get; set; }
-//            public object InputPayload { get; set; }
-//            public string PayloadType { get; set; }
-//            public int ExpectedStatus { get; set; }
-//            public object ExpectedResponse { get; set; }
-//        }
+        public class AIGeneratedTestCase
+        {
+            public string TestCaseName { get; set; }
+            public object InputPayload { get; set; }
+            public string PayloadType { get; set; }
+            public int ExpectedStatus { get; set; }
+            public object ExpectedResponse { get; set; }
+        }
 
-//        public async Task<List<AIGeneratedTestCase>> GenerateTestCases(ApiInfo endpoint)
-//        {
-//            string prompt = BuildPrompt(endpoint);
+        public async Task<List<AIGeneratedTestCase>> GenerateTestCases(ApiInfo endpoint)
+        {
+            string prompt = BuildPrompt(endpoint);
 
-//            // Create chat messages
-//            var messages = new List<ChatMessage>
-//            {
-//                new SystemChatMessage("You are an expert QA engineer. Generate valid, invalid, boundary and negative test cases for API endpoints. Always respond with valid JSON only."),
-//                new UserChatMessage(prompt)
-//            };
+            // Define the response schema to enforce structured JSON output
+            var testCaseSchema = new Schema
+            {
+                Type = Google.GenAI.Types.Type.OBJECT,
+                Properties = new Dictionary<string, Schema>
+    {
+        { "TestCaseName", new Schema { Type = Google.GenAI.Types.Type.STRING } },
 
-//            // Get completion
-//            var options = new ChatCompletionOptions
-//            {
-//                MaxTokens = 2000,
-//                Temperature = 0.3f
-//            };
+        { "InputPayload", new Schema { Type = Google.GenAI.Types.Type.STRING, Nullable = true } },
 
-//            var response = await _chatClient.CompleteChatAsync(messages, options);
+        { "PayloadType", new Schema { Type = Google.GenAI.Types.Type.STRING } },
+        { "ExpectedStatus", new Schema { Type = Google.GenAI.Types.Type.INTEGER } },
 
-//            string content = response.Value.Content[0].Text;
+        { "ExpectedResponse", new Schema
+            {
+                Type = Google.GenAI.Types.Type.OBJECT,
+                Properties = new Dictionary<string, Schema>
+                {
+                    { "result", new Schema { Type = Google.GenAI.Types.Type.STRING, Nullable = true } }
+                }
+            }
+        }
+    },
+                Required = new List<string>
+    {
+        "TestCaseName", "InputPayload", "PayloadType", "ExpectedStatus", "ExpectedResponse"
+    }
+            };
 
-//            // Clean up response if it contains markdown code blocks
-//            content = content.Trim();
-//            if (content.StartsWith("```json"))
-//            {
-//                content = content.Substring(7);
-//            }
-//            if (content.StartsWith("```"))
-//            {
-//                content = content.Substring(3);
-//            }
-//            if (content.EndsWith("```"))
-//            {
-//                content = content.Substring(0, content.Length - 3);
-//            }
-//            content = content.Trim();
 
-//            return JsonConvert.DeserializeObject<List<AIGeneratedTestCase>>(content);
-//        }
+            var arraySchema = new Schema
+            {
+                Type = Google.GenAI.Types.Type.ARRAY,
+                Items = testCaseSchema
+            };
 
-//        private string BuildPrompt(ApiInfo ep)
-//        {
-//            var parameters = string.Join("\n", ep.parameters.Select(p =>
-//                $"- {p.name}: {p.type} ({p.source})"
-//            ));
+            var config = new GenerateContentConfig
+            {
+                ResponseMimeType = "application/json",
+                ResponseSchema = arraySchema
+            };
 
-//            return $@"Generate API test cases for the following endpoint:
-//URL: {ep.url}
-//Method: {ep.method}
-//Parameters:
-//{parameters}
+            // Gemini API Call with JSON Schema Enforcement
+            var response = await _client.Models.GenerateContentAsync(
+                model: "gemini-2.5-flash",
+                contents: new Content
+                {
+                    Role = "user",
+                    Parts = new List<Part> { new Part { Text = prompt } }
+                },
+                config: config
+            );
 
-//Generate a JSON array of test cases. 
-//Each item must strictly follow this structure:
-//[
-//  {{
-//    ""TestCaseName"": ""Valid Payload"",
-//    ""InputPayload"": {{ ""exampleKey"": ""exampleValue"" }},
-//    ""PayloadType"": ""Body"",
-//    ""ExpectedStatus"": 200,
-//    ""ExpectedResponse"": {{ ""success"": true }}
-//  }}
-//]
+            string content = response.Candidates[0].Content.Parts[0].Text.Trim();
 
-//Return ONLY the JSON array, no markdown formatting or explanation.
-//Ensure payload uses real data, not variable names.";
-//        }
-//    }
-//}
+            Console.WriteLine(content);
+
+            // Direct deserialization (no cleaning needed due to schema enforcement)
+            return JsonConvert.DeserializeObject<List<AIGeneratedTestCase>>(content) ?? new List<AIGeneratedTestCase>();
+        }
+
+        private string BuildPrompt(ApiInfo ep)
+        {
+            var parameters = string.Join("\n", ep.parameters.Select(p =>
+                $"- {p.name}: {p.type}"
+            ));
+
+            return $@"You are an expert QA engineer. 
+                    Generate API test cases for the following endpoint:
+
+                    URL: {ep.url}
+                    Method: {ep.method}
+
+                    Parameters:
+                    {parameters}
+
+                    Generate an array of test cases using the enforced JSON schema. Use realistic values for payloads and responses.";
+        }
+    }
+}

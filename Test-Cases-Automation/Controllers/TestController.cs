@@ -1,7 +1,6 @@
-﻿using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
+using Newtonsoft.Json;
 using OfficeOpenXml;
-using OfficeOpenXml.DataValidation;
 using Test_Cases_Automation.Model;
 using Test_Cases_Automation.Services;
 
@@ -157,230 +156,202 @@ namespace Test_Cases_Automation.Controllers
         }
 
         [HttpPost("generate-testcases")]
-        public IActionResult GenerateTestCases([FromBody] List<ApiInfo> endpoints)
+        public async Task<IActionResult> GenerateTestCases([FromBody] List<ApiInfo> endpoints)
         {
             if (endpoints == null || endpoints.Count == 0)
                 return BadRequest("No endpoint data provided.");
-
             ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
-
             using (var package = new ExcelPackage())
             {
-                // TestCases Sheet
-                var ws = package.Workbook.Worksheets.Add("TestCases");
-
-                string[] headers = {
-                    "Endpoint", "Method", "Test Case",
-                    "Input Payload", "Payload Type",
-                    "Expected Status", "Expected Response",
-                    "Actual Status", "Actual Response",
-                    "Test Result"
-                };
-
-                for (int i = 0; i < headers.Length; i++)
+                try
                 {
-                    ws.Cells[1, i + 1].Value = headers[i];
-                    ws.Cells[1, i + 1].Style.Font.Bold = true;
-                    ws.Column(i + 1).Width = 28;
-                }
-
-                ws.Column(4).Width = 55;
-                ws.Column(1).Width = 60;
-
-                int row = 2;
-
-
-                // Lookup Sheet 
-                var lookupSheet = package.Workbook.Worksheets.Add("Lookup");
-
-                lookupSheet.Cells[1, 1].Value = "EndpointUrl";
-                lookupSheet.Cells[1, 2].Value = "Method";
-                lookupSheet.Cells[1, 3].Value = "PayloadTypes";
-                lookupSheet.Cells[1, 4].Value = "InputPayload";
-
-                int lookupRow = 2;
-                int baseTypeColumn = 10; // J Column
-
-                foreach (var ep in endpoints)
-                {
-                    lookupSheet.Cells[lookupRow, 1].Value = ep.url;
-                    lookupSheet.Cells[lookupRow, 2].Value = ep.method;
-
-                    var payloadTypes = ep.parameters?
-                        .Select(p => p.source)
-                        .Where(s => !string.IsNullOrWhiteSpace(s))
-                        .Distinct()
-                        .ToList() ?? new List<string>();
-
-                    lookupSheet.Cells[lookupRow, 3].Value = string.Join(",", payloadTypes);
-                    lookupSheet.Cells[lookupRow, 4].Value = MakeInputPayloadString(ep);
-
-                    int col = baseTypeColumn;
-                    foreach (var t in payloadTypes)
+                    // TestCases sheet
+                    var ws = package.Workbook.Worksheets.Add("TestCases");
+                    string[] headers = {
+                "Endpoint", "Method", "Test Case",
+                "Input Payload", "Payload Type",
+                "Expected Status", "Expected Response",
+                "Actual Status", "Actual Response", "Test Result"
+            };
+                    for (int i = 0; i < headers.Length; i++)
                     {
-                        lookupSheet.Cells[lookupRow, col].Value = t;
-                        col++;
+                        ws.Cells[1, i + 1].Value = headers[i];
+                        ws.Cells[1, i + 1].Style.Font.Bold = true;
+                        ws.Column(i + 1).Width = 28;
                     }
-
-                    if (payloadTypes.Count > 0)
+                    ws.Column(4).Width = 55;
+                    ws.Column(1).Width = 60;
+                    int row = 2;
+                    // Lookup sheet
+                    var lookup = package.Workbook.Worksheets.Add("Lookup");
+                    lookup.Cells[1, 1].Value = "EndpointUrl";
+                    lookup.Cells[1, 2].Value = "Method";
+                    lookup.Cells[1, 3].Value = "PayloadTypes";
+                    lookup.Cells[1, 4].Value = "InputPayload";
+                    int lookupRow = 2;
+                    int baseTypeColumn = 10;
+                    foreach (var ep in endpoints)
                     {
-                        string name = $"PT_LIST_{lookupRow}";
-                        var range = lookupSheet.Cells[
-                            lookupRow,
-                            baseTypeColumn,
-                            lookupRow,
-                            baseTypeColumn + payloadTypes.Count - 1
-                        ];
-                        package.Workbook.Names.Add(name, range);
-                    }
-
-                    lookupRow++;
-                }
-
-                lookupSheet.Hidden = eWorkSheetHidden.Hidden;
-
-                // Auto-Generate Test Cases
-                foreach (var ep in endpoints)
-                {
-                    string endpoint = ep.url;
-                    string method = ep.method;
-
-                    var parameters = ep.parameters;
-
-                    // Valid Payload Test
-                    ws.Cells[row, 1].Value = endpoint;
-                    ws.Cells[row, 2].Value = method;
-                    ws.Cells[row, 3].Value = "Valid Payload";
-                    ws.Cells[row, 4].Value = MakeInputPayloadString(ep);
-
-                    string firstPayloadType = parameters?
-                        .Select(p => p.source)
-                        .Where(s => !string.IsNullOrWhiteSpace(s))
-                        .Distinct()
-                        .FirstOrDefault() ?? "";
-
-                    ws.Cells[row, 5].Value = firstPayloadType;
-                    ws.Cells[row, 6].Value = 200;
-                    ws.Cells[row, 7].Value = "Success expected";
-
-                    row++;
-
-                    // Missing Parameter Tests
-                    if (parameters != null)
-                    {
-                        foreach (var p in parameters)
+                        lookup.Cells[lookupRow, 1].Value = ep.url;
+                        lookup.Cells[lookupRow, 2].Value = ep.method;
+                        var payloadTypes = ep.parameters?
+                            .Select(p => p.source)
+                            .Where(s => !string.IsNullOrWhiteSpace(s))
+                            .Distinct()
+                            .ToList() ?? new List<string>();
+                        lookup.Cells[lookupRow, 3].Value = string.Join(",", payloadTypes);
+                        lookup.Cells[lookupRow, 4].Value = MakeInputPayloadString(ep);  // Updated helper below
+                        int col = baseTypeColumn;
+                        foreach (var t in payloadTypes)
+                            lookup.Cells[lookupRow, col++].Value = t;
+                        if (payloadTypes.Count > 0)
                         {
-                            ws.Cells[row, 1].Value = endpoint;
-                            ws.Cells[row, 2].Value = method;
-                            ws.Cells[row, 3].Value = $"Missing parameter: {p.name}";
-                            ws.Cells[row, 4].Value = MakePayloadMissingParameter(ep, p);
-                            ws.Cells[row, 5].Value = p.source;
-                            ws.Cells[row, 6].Value = 400;
-                            ws.Cells[row, 7].Value = "Validation error expected";
+                            string name = $"PT_LIST_{lookupRow}";
+                            var range = lookup.Cells[
+                                lookupRow, baseTypeColumn,
+                                lookupRow, baseTypeColumn + payloadTypes.Count - 1
+                            ];
+                            package.Workbook.Names.Add(name, range);
+                        }
+                        lookupRow++;
+                    }
+                    lookup.Hidden = eWorkSheetHidden.Hidden;
+                    // Call AI
+                    var aiService = new CopilotAIService("AIzaSyB-bHYX_OOQqJWLIylie9k_834ffpou7L4");  // TODO: Move to config
+                    foreach (var ep in endpoints)
+                    {
+                        List<CopilotAIService.AIGeneratedTestCase> aiCases;
+                        try
+                        {
+                            aiCases = await aiService.GenerateTestCases(ep);
+                        }
+                        catch (Exception ex)
+                        {
+                            aiCases = new List<CopilotAIService.AIGeneratedTestCase>
+                    {
+                        new CopilotAIService.AIGeneratedTestCase
+                        {
+                            TestCaseName = "AI Generation Failed",
+                            InputPayload = "{}", 
+                            PayloadType = "N/A",
+                            ExpectedStatus = 500,
+                            ExpectedResponse = new { error = ex.Message }
+                        }
+                    };
+                        }
+                        foreach (var tc in aiCases)
+                        {
+                            ws.Cells[row, 1].Value = ep.url;
+                            ws.Cells[row, 2].Value = ep.method;
+                            ws.Cells[row, 3].Value = tc.TestCaseName;
+                            // Pretty-print InputPayload (handles string JSON from AI)
+                            ws.Cells[row, 4].Value = PrettyPrintJson(tc.InputPayload);
+                            // SET PAYLOAD TYPE FROM ENDPOINT METADATA (unchanged)
+                            var firstPayloadType = ep.parameters?.FirstOrDefault()?.source ?? "";
+                            ws.Cells[row, 5].Value = firstPayloadType;
+                            ws.Cells[row, 6].Value = tc.ExpectedStatus;
+                            ws.Cells[row, 7].Value = ExtractMessage(tc.ExpectedResponse);
                             row++;
                         }
                     }
-
-                    // Invalid Type Tests
-                    if (parameters != null)
+                    // Manual 150 rows (unchanged)
+                    int dynamicStart = row;
+                    int dynamicEnd = dynamicStart + 150;
+                    for (int r = dynamicStart; r <= dynamicEnd; r++)
                     {
-                        foreach (var p in parameters)
-                        {
-                            ws.Cells[row, 1].Value = endpoint;
-                            ws.Cells[row, 2].Value = method;
-                            ws.Cells[row, 3].Value = $"Invalid type for: {p.name}";
-                            ws.Cells[row, 4].Value = MakePayloadInvalidType(ep, p);
-                            ws.Cells[row, 5].Value = p.source;
-                            ws.Cells[row, 6].Value = 400;
-                            ws.Cells[row, 7].Value = "Invalid type expected";
-                            row++;
-                        }
+                        var dvEndpoint = ws.DataValidations.AddListValidation($"A{r}");
+                        dvEndpoint.Formula.ExcelFormula = $"=Lookup!$A$2:$A${lookupRow - 1}";
+                        ws.Cells[r, 2].Formula =
+                            $"=IF($A{r}=\"\",\"\",IFERROR(VLOOKUP($A{r},Lookup!$A$2:$D${lookupRow - 1},2,false),\"\"))";
+                        ws.Cells[r, 4].Formula =
+                            $"=IFERROR(VLOOKUP($A{r},Lookup!$A$2:$D${lookupRow - 1},4,false),\"\")";
+                        ws.Cells[r, 4].Style.Locked = false;
+                        ws.Cells[r, 5].Formula =
+                            $"=IF($A{r}=\"\",\"\",INDEX(INDIRECT(\"PT_LIST_\" & MATCH($A{r},Lookup!$A$2:$A${lookupRow - 1},0)+1),1))";
+                        var dvPayload = ws.DataValidations.AddListValidation($"E{r}");
+                        dvPayload.Formula.ExcelFormula =
+                            $"=INDIRECT(\"PT_LIST_\" & MATCH($A{r},Lookup!$A$2:$A${lookupRow - 1},0)+1)";
                     }
+                    ws.View.FreezePanes(2, 1);
+                    ws.Cells.Style.WrapText = true;
+                    // Return Excel (unchanged)
+                    var bytes = package.GetAsByteArray();
+                    return File(
+                        bytes,
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        "TestCases.xlsx"
+                    );
                 }
-
-                // Manual Dropdown Section
-                int dynamicStartRow = row;
-                int dynamicEndRow = dynamicStartRow + 150;
-
-                for (int r = dynamicStartRow; r <= dynamicEndRow; r++)
+                catch (Exception ex)
                 {
-                    // Endpoint Dropdown
-                    var dv1 = ws.DataValidations.AddListValidation($"A{r}");
-                    dv1.Formula.ExcelFormula = $"=Lookup!$A$2:$A${lookupRow - 1}";
-                    dv1.ShowErrorMessage = true;
-
-                    // Auto Method
-                    ws.Cells[r, 2].Formula =
-                        $"=IF($A{r}=\"\",\"\",IFERROR(VLOOKUP($A{r},Lookup!$A$2:$D${lookupRow - 1},2,false),\"\"))";
-
-                    // Auto Input Payload (editable)
-                    ws.Cells[r, 4].Formula =
-                        $"=IFERROR(VLOOKUP($A{r},Lookup!$A$2:$D${lookupRow - 1},4,false),\"\")";
-                    ws.Cells[r, 4].Style.Locked = false;
-
-                    // Auto Payload Type
-                    ws.Cells[r, 5].Formula =
-                        $"=IF($A{r}=\"\",\"\",INDEX(INDIRECT(\"PT_LIST_\" & MATCH($A{r},Lookup!$A$2:$A${lookupRow - 1},0)+1),1))";
-
-                    // Payload Type Dropdown
-                    var dv2 = ws.DataValidations.AddListValidation($"E{r}");
-                    dv2.Formula.ExcelFormula =
-                        $"=INDIRECT(\"PT_LIST_\" & MATCH($A{r},Lookup!$A$2:$A${lookupRow - 1},0)+1)";
-                    dv2.ShowErrorMessage = true;
+                    return StatusCode(500, new
+                    {
+                        message = "Error generating test cases.",
+                        error = ex.Message
+                    });
                 }
+            }
+        }
 
+        private static string ExtractMessage(object expectedResponse)
+        {
+            if (expectedResponse == null)
+                return "";
 
-                ws.View.FreezePanes(2, 1);
-                ws.Cells.Style.WrapText = true;
+            try
+            {
+                // Convert to JSON string
+                var json = JsonConvert.SerializeObject(expectedResponse);
 
+                // Convert to dictionary
+                var dict = JsonConvert.DeserializeObject<Dictionary<string, object>>(json);
 
-                // Return File
-                var bytes = package.GetAsByteArray();
-                return File(bytes,
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    "TestCases.xlsx");
+                if (dict == null || dict.Count == 0)
+                    return json;
+
+                // return FIRST value from the object
+                var firstValue = dict.First().Value;
+
+                return firstValue?.ToString() ?? "";
+            }
+            catch
+            {
+                return expectedResponse.ToString();
             }
         }
 
 
+        private static string PrettyPrintJson(object payload)
+        {
+            if (payload == null) return "{}";
+            string jsonStr = payload.ToString();
+            if (string.IsNullOrEmpty(jsonStr)) return "{}";
+            try
+            {
+                // If it's already an object/JObject, serialize directly
+                if (payload is not string)
+                {
+                    return JsonConvert.SerializeObject(payload, Formatting.Indented);
+                }
+                // Parse string (escaped JSON from AI) and re-serialize
+                var obj = JsonConvert.DeserializeObject(jsonStr);
+                return JsonConvert.SerializeObject(obj, Formatting.Indented);
+            }
+            catch
+            {
+                return jsonStr;
+            }
+        }
 
         private static string MakeInputPayloadString(ApiInfo ep)
         {
             if (ep == null || ep.parameters == null || ep.parameters.Count == 0)
                 return "{}";
-
             var pairs = ep.parameters.Select(p =>
-                $"{p.name}:'{p.type}'"
+                $"{p.name}: \"{p.type}\""  
             );
-
             return "{ " + string.Join(", ", pairs) + " }";
         }
-
-        private static string MakePayloadMissingParameter(ApiInfo ep, ApiParameterDto missing)
-        {
-            var parts = ep.parameters
-                .Where(p => p.name != missing.name)
-                .Select(p => $"{p.name}:'{p.type}'");
-
-            return "{ " + string.Join(", ", parts) + " }";
-        }
-
-        private static string MakePayloadInvalidType(ApiInfo ep, ApiParameterDto invalidParam)
-        {
-            var parts = ep.parameters.Select(p =>
-            {
-                if (p.name == invalidParam.name)
-                    return $"{p.name}:'INVALID'";
-                return $"{p.name}:'{p.type}'";
-            });
-
-            return "{ " + string.Join(", ", parts) + " }";
-        }
-
-
-
-
-
     }
 }
 
