@@ -31,15 +31,15 @@ var apiKey = builder.Configuration.GetValue<string>("Gemini:ApiKey");
 
 // 2. Register CopilotAIService as a Singleton
 // The DI container will create one instance and pass the apiKey to its constructor.
-if (!string.IsNullOrWhiteSpace(apiKey))
-{
-    builder.Services.AddSingleton(new CopilotAIService(apiKey));
-}
-else
-{
-    // Handle the case where the API key is missing (e.g., log an error)
-    Console.WriteLine("Warning: Gemini API Key is missing from configuration.");
-}
+//if (!string.IsNullOrWhiteSpace(apiKey))
+//{
+//    builder.Services.AddSingleton(new CopilotAIService(apiKey));
+//}
+//else
+//{
+//    // Handle the case where the API key is missing (e.g., log an error)
+//    Console.WriteLine("Warning: Gemini API Key is missing from configuration.");
+//}
 
 
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle

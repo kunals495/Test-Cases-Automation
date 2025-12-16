@@ -101,8 +101,6 @@ namespace Test_Cases_Automation.Services
             }
 
             return package.GetAsByteArray();
-
-
         }
 
         // Login Function
@@ -238,7 +236,6 @@ namespace Test_Cases_Automation.Services
 
                 var response = await client.ExecuteAsync(request);
 
-                // Endpoint unreachable / timeout
                 if (response.StatusCode == 0)
                 {
                     return (0,

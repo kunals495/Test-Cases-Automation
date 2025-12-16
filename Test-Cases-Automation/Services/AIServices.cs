@@ -157,8 +157,8 @@ namespace Test_Cases_Automation.Services
         {
             public string TestCaseName { get; set; }
 
-            public string Endpoint { get; set; }    
-            public string Method { get; set; }      
+            public string Endpoint { get; set; }
+            public string Method { get; set; }
 
             public object InputPayload { get; set; }
             public string PayloadType { get; set; }
@@ -212,7 +212,7 @@ namespace Test_Cases_Automation.Services
             };
 
             var response = await _client.Models.GenerateContentAsync(
-                model: "gemini-2.5-flash",
+                model: "gemini-2.5-flash-lite",
                 contents: new Content
                 {
                     Role = "user",
@@ -270,8 +270,8 @@ namespace Test_Cases_Automation.Services
                 Required = new List<string>
                 {
                     "TestCaseName",
-                    "Endpoint",      
-                    "Method",        
+                    "Endpoint",
+                    "Method",
                     "InputPayload",
                     "PayloadType",
                     "ExpectedStatus",
