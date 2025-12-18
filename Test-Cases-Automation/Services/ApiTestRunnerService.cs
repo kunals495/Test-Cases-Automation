@@ -130,8 +130,8 @@ namespace Test_Cases_Automation.Services
             // JSON Body from .env values
             var body = new
             {
-                username = username,
-                password = password
+                Email = username,
+                Password = password
             };
 
             request.AddJsonBody(body);
@@ -151,20 +151,27 @@ namespace Test_Cases_Automation.Services
                 return null;
             }
 
+                Console.WriteLine(response.Content);
+
             var json = JObject.Parse(response.Content);
 
-            string? token = json["accessToken"]?.ToString();
+                //string? token = json["accessToken"]?.ToString();
 
-            if (string.IsNullOrWhiteSpace(token))
+                string? token = json["access_token"]?.ToString();
+
+                if (string.IsNullOrWhiteSpace(token))
             {
                 Console.WriteLine("Token missing in response.");
                 return null;
             }
 
+                Console.WriteLine(token);
+
             return token;
         }
         catch (Exception ex)
         {
+
             Console.WriteLine("Login Exception: " + ex.Message);
             return null;
         }
