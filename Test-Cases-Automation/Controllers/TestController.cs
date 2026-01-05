@@ -999,17 +999,48 @@ namespace Test_Cases_Automation.Controllers
         //        //        return "{ " + string.Join(", ", pairs) + " }";
         //        //    }
 
-        [HttpPost("generate-testcases-from-swagger")]
-        public async Task<IActionResult> GenerateFromSwagger(
-     [FromBody] SwaggerRequestDto request)
+        [HttpPost("generate-from-swagger-url")]
+        public async Task<IActionResult> GenerateFromSwaggerUrl(
+        [FromBody] SwaggerGenerateRequestDto request)
         {
-            var endpoints = SwaggerToApiInfoMapper.Map(
-                request.SwaggerJson,
-                request.BaseUrl   // 🔥 USE PROVIDED BASE URL
-            );
+            if (string.IsNullOrWhiteSpace(request.SwaggerUrl))
+                return BadRequest("Swagger URL is required");
 
-            return await GenerateTestCases(endpoints);
+            try
+            {
+                using var http = new HttpClient();
+
+              
+                var swaggerJson = await http.GetStringAsync(request.SwaggerUrl);
+
+                // Extract base URL from swagger URL
+                var uri = new Uri(request.SwaggerUrl);
+                var baseUrl = $"{uri.Scheme}://{uri.Host}{(uri.IsDefaultPort ? "" : ":" + uri.Port)}";
+
+                // Parse swagger
+                var endpoints = SwaggerToApiInfoMapper.Map(swaggerJson, baseUrl);
+
+                // Decide mode
+                if (request.Mode == "ai")
+                {
+                    return await GenerateTestCases(endpoints);
+                }
+                else
+                {
+                    return await GenerateTestCases(endpoints);
+                    
+                }
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    message = "Failed to generate test cases from swagger URL",
+                    error = ex.Message
+                });
+            }
         }
+
 
 
         [HttpPost("generate-testcases")]
@@ -1019,175 +1050,218 @@ namespace Test_Cases_Automation.Controllers
                 return BadRequest("No endpoint data provided.");
 
             ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
-            using (var package = new ExcelPackage())
+
+            using var package = new ExcelPackage();
+
+            try
             {
+                // =========================
+                // TestCases Sheet
+                // =========================
+                var ws = package.Workbook.Worksheets.Add("TestCases");
+
+                string[] headers =
+                {
+            "Endpoint", "Method", "Test Case",
+            "Input Payload", "Payload Type",
+            "Expected Status", "Expected Response",
+            "Actual Status", "Actual Response", "Test Result"
+        };
+
+                for (int i = 0; i < headers.Length; i++)
+                {
+                    ws.Cells[1, i + 1].Value = headers[i];
+                    ws.Cells[1, i + 1].Style.Font.Bold = true;
+                    ws.Column(i + 1).Width = 28;
+                }
+
+                ws.Column(1).Width = 60;
+                ws.Column(4).Width = 55;
+
+                int row = 2;
+
+                // =========================
+                // Lookup Sheet
+                // =========================
+                var lookup = package.Workbook.Worksheets.Add("Lookup");
+
+                lookup.Cells[1, 1].Value = "EndpointUrl";
+                lookup.Cells[1, 2].Value = "Method";
+                lookup.Cells[1, 3].Value = "PayloadTypes";
+                lookup.Cells[1, 4].Value = "InputPayload";
+
+                int lookupRow = 2;
+                int baseTypeColumn = 10;
+
+                foreach (var ep in endpoints)
+                {
+                    lookup.Cells[lookupRow, 1].Value = ep.url;
+                    lookup.Cells[lookupRow, 2].Value = ep.method;
+
+                    var payloadTypes = ep.parameters?
+                        .Select(p => p.source)
+                        .Where(s => !string.IsNullOrWhiteSpace(s))
+                        .Distinct()
+                        .ToList() ?? new List<string>();
+
+                    if (payloadTypes.Count == 0 && ep.InputPayloadType != InputPayloadType.none)
+                        payloadTypes.Add(ep.InputPayloadType.ToString());
+
+                    lookup.Cells[lookupRow, 3].Value = string.Join(",", payloadTypes);
+                    lookup.Cells[lookupRow, 4].Value = MakeInputPayloadString(ep);
+
+                    int col = baseTypeColumn;
+                    foreach (var t in payloadTypes)
+                        lookup.Cells[lookupRow, col++].Value = t;
+
+                    if (payloadTypes.Count > 0)
+                    {
+                        string name = $"PT_LIST_{lookupRow}";
+                        var range = lookup.Cells[
+                            lookupRow, baseTypeColumn,
+                            lookupRow, baseTypeColumn + payloadTypes.Count - 1
+                        ];
+                        package.Workbook.Names.Add(name, range);
+                    }
+
+                    lookupRow++;
+                }
+
+                lookup.Hidden = eWorkSheetHidden.Hidden;
+
+                // =========================
+                // AI CALL + SANITIZATION
+                // =========================
+                var aiService = new GroqCopilotAIService("");
+                AIResponse aiResponse;
+
                 try
                 {
-                    // TestCases sheet
-                    var ws = package.Workbook.Worksheets.Add("TestCases");
-                    string[] headers = {
-                                "Endpoint", "Method", "Test Case",
-                                "Input Payload", "Payload Type",
-                                "Expected Status", "Expected Response",
-                                "Actual Status", "Actual Response", "Test Result"
-                            };
-                    for (int i = 0; i < headers.Length; i++)
-                    {
-                        ws.Cells[1, i + 1].Value = headers[i];
-                        ws.Cells[1, i + 1].Style.Font.Bold = true;
-                        ws.Column(i + 1).Width = 28;
-                    }
-                    ws.Column(4).Width = 55;
-                    ws.Column(1).Width = 60;
-                    int row = 2;
+                    aiResponse = await aiService.GenerateAllTestCases(endpoints);
 
-                    // Lookup sheet
-                    var lookup = package.Workbook.Worksheets.Add("Lookup");
-                    lookup.Cells[1, 1].Value = "EndpointUrl";
-                    lookup.Cells[1, 2].Value = "Method";
-                    lookup.Cells[1, 3].Value = "PayloadTypes";
-                    lookup.Cells[1, 4].Value = "InputPayload";
-                    int lookupRow = 2;
-                    int baseTypeColumn = 10;
-                    foreach (var ep in endpoints)
+                    foreach (var epResult in aiResponse.per_endpoint ?? Enumerable.Empty<PerEndpoint>())
                     {
-                        lookup.Cells[lookupRow, 1].Value = ep.url;
-                        lookup.Cells[lookupRow, 2].Value = ep.method;
-                        var payloadTypes = ep.parameters?
-                            .Select(p => p.source)
-                            .Where(s => !string.IsNullOrWhiteSpace(s))
-                            .Distinct()
-                            .ToList() ?? new List<string>();
-                        lookup.Cells[lookupRow, 3].Value = string.Join(",", payloadTypes);
-                        lookup.Cells[lookupRow, 4].Value = MakeInputPayloadString(ep);
-                        int col = baseTypeColumn;
-                        foreach (var t in payloadTypes)
-                            lookup.Cells[lookupRow, col++].Value = t;
-                        if (payloadTypes.Count > 0)
+                        foreach (var tc in epResult.testcases ?? Enumerable.Empty<CopilotAIService.AIGeneratedTestCase>())
                         {
-                            string name = $"PT_LIST_{lookupRow}";
-                            var range = lookup.Cells[
-                                lookupRow, baseTypeColumn,
-                                lookupRow, baseTypeColumn + payloadTypes.Count - 1
-                            ];
-                            package.Workbook.Names.Add(name, range);
-                        }
-                        lookupRow++;
-                    }
-                    lookup.Hidden = eWorkSheetHidden.Hidden;
+                            if (tc.InputPayload == null)
+                                continue;
 
-                    // Bulk AI Call
-                    var aiService = new CopilotAIService("");
-                    AIResponse aiResponse;
-                    try
-                    {
-                        aiResponse = await aiService.GenerateAllTestCases(endpoints);
-                    }
-                    catch (Exception ex)
-                    {
-                        // If bulk generation fails, fallback to an error-only response so Excel still returns
-                        aiResponse = new AIResponse
-                        {
-                            per_endpoint = endpoints.Select(e => new PerEndpoint
+                            string payload = tc.InputPayload.ToString();
+
+                            // Detect JavaScript patterns
+                            if (payload.Contains(".repeat(") ||
+                                payload.Contains(".join(") ||
+                                payload.Contains("=>") ||
+                                payload.Contains("function"))
                             {
-                                endpoint = $"{e.url} {e.method}",
-                                testcases = new List<CopilotAIService.AIGeneratedTestCase>
-                                        {
-                                            new CopilotAIService.AIGeneratedTestCase
-                                            {
-                                                TestCaseName = "AI Generation Failed",
-                                                InputPayload = "{}",
-                                                PayloadType = "N/A",
-                                                ExpectedStatus = 500,
-                                                ExpectedResponse = new { error = ex.Message }
-                                            }
-                                        }
-                            }).ToList(),
-                            scenario_tests = new List<CopilotAIService.AIGeneratedTestCase>()
-                        };
-                    }
+                                Console.WriteLine($"[AI WARNING] JS detected in payload for test: {tc.TestCaseName}");
 
-                    Console.WriteLine(aiResponse.per_endpoint);
-                    foreach (var epResult in aiResponse.per_endpoint)
-                    {
-                        var matchedApi = endpoints.FirstOrDefault(e =>
-                            string.Equals(e.url, epResult.endpoint, StringComparison.OrdinalIgnoreCase)
-                            || string.Equals($"{e.url} {e.method}", epResult.endpoint, StringComparison.OrdinalIgnoreCase)
-                            || string.Equals($"{e.method} {e.url}", epResult.endpoint, StringComparison.OrdinalIgnoreCase)
-                        );
+                                // Replace "a".repeat(1000)
+                                var regex = new System.Text.RegularExpressions.Regex(
+                                    "\"([^\"]+)\"\\.repeat\\((\\d+)\\)",
+                                    System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                                );
 
-                        foreach (var tc in epResult.testcases)
-                        {
-                            ws.Cells[row, 1].Value = matchedApi?.url ?? epResult.endpoint;
-                            ws.Cells[row, 2].Value = matchedApi?.method ?? ExtractMethodFromEndpointString(epResult.endpoint);
-                            ws.Cells[row, 3].Value = tc.TestCaseName;
-                            ws.Cells[row, 4].Value = PrettyPrintJson(tc.InputPayload);
-                            ws.Cells[row, 5].Value = tc.PayloadType ?? (matchedApi?.parameters?.FirstOrDefault()?.source ?? "");
-                            ws.Cells[row, 6].Value = tc.ExpectedStatus;
-                            ws.Cells[row, 7].Value = ExtractMessage(tc.ExpectedResponse);
-                            row++;
+                                payload = regex.Replace(payload, match =>
+                                {
+                                    string value = match.Groups[1].Value;
+                                    int count = Math.Min(int.Parse(match.Groups[2].Value), 1000);
+                                    return $"\"{new string(value[0], count)}\"";
+                                });
+
+                                tc.InputPayload = payload;
+                            }
                         }
                     }
+                }
+                catch (JsonException jsonEx)
+                {
+                    Console.WriteLine($"[AI ERROR] Invalid JSON: {jsonEx.Message}");
 
-                    //Append scenario-based test cases
-                    if (aiResponse.scenario_tests != null && aiResponse.scenario_tests.Count > 0)
-                    {
-                        
-  
-
-                        foreach (var sc in aiResponse.scenario_tests)
-                        {
-                            ws.Cells[row, 1].Value = sc.Endpoint;
-                            ws.Cells[row, 2].Value = sc.Method;
-                            ws.Cells[row, 3].Value = sc.TestCaseName;
-                            ws.Cells[row, 4].Value = PrettyPrintJson(sc.InputPayload);
-                            ws.Cells[row, 5].Value = sc.PayloadType;
-                            ws.Cells[row, 6].Value = sc.ExpectedStatus;
-                            ws.Cells[row, 7].Value = ExtractMessage(sc.ExpectedResponse);
-                            row++;
-                        }
-                    }
-
-                    // Manual 150 rows (unchanged) — adjust start from 'row'
-                    int dynamicStart = row;
-                    int dynamicEnd = dynamicStart + 150;
-                    for (int r = dynamicStart; r <= dynamicEnd; r++)
-                    {
-                        var dvEndpoint = ws.DataValidations.AddListValidation($"A{r}");
-                        dvEndpoint.Formula.ExcelFormula = $"=Lookup!$A$2:$A${lookupRow - 1}";
-                        ws.Cells[r, 2].Formula =
-                            $"=IF($A{r}=\"\",\"\",IFERROR(VLOOKUP($A{r},Lookup!$A$2:$D${lookupRow - 1},2,false),\"\"))";
-                        ws.Cells[r, 4].Formula =
-                            $"=IFERROR(VLOOKUP($A{r},Lookup!$A$2:$D${lookupRow - 1},4,false),\"\")";
-                        ws.Cells[r, 4].Style.Locked = false;
-                        ws.Cells[r, 5].Formula =
-                            $"=IF($A{r}=\"\",\"\",INDEX(INDIRECT(\"PT_LIST_\" & MATCH($A{r},Lookup!$A$2:$A${lookupRow - 1},0)+1),1))";
-                        var dvPayload = ws.DataValidations.AddListValidation($"E{r}");
-                        dvPayload.Formula.ExcelFormula =
-                            $"=INDIRECT(\"PT_LIST_\" & MATCH($A{r},Lookup!$A$2:$A${lookupRow - 1},0)+1)";
-                    }
-
-                    ws.View.FreezePanes(2, 1);
-                    ws.Cells.Style.WrapText = true;
-
-                    // Return Excel
-                    var bytes = package.GetAsByteArray();
-                    return File(
-                        bytes,
-                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        "TestCases.xlsx"
-                    );
+                    aiResponse = BuildFallbackResponse(endpoints,
+                        $"AI returned invalid JSON: {jsonEx.Message}");
                 }
                 catch (Exception ex)
                 {
-                    return StatusCode(500, new
-                    {
-                        message = "Error generating test cases.",
-                        error = ex.Message
-                    });
+                    Console.WriteLine($"[AI ERROR] {ex.Message}");
+
+                    aiResponse = BuildFallbackResponse(endpoints, ex.Message);
                 }
+
+                // =========================
+                // Write TestCases
+                // =========================
+                foreach (var epResult in aiResponse.per_endpoint)
+                {
+                    var matchedApi = endpoints.FirstOrDefault(e =>
+                        string.Equals(e.url, epResult.endpoint, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals($"{e.url} {e.method}", epResult.endpoint, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals($"{e.method} {e.url}", epResult.endpoint, StringComparison.OrdinalIgnoreCase)
+                    );
+
+                    foreach (var tc in epResult.testcases)
+                    {
+                        ws.Cells[row, 1].Value = matchedApi?.url ?? epResult.endpoint;
+                        ws.Cells[row, 2].Value = matchedApi?.method ?? ExtractMethodFromEndpointString(epResult.endpoint);
+                        ws.Cells[row, 3].Value = tc.TestCaseName;
+                        ws.Cells[row, 4].Value = PrettyPrintJson(tc.InputPayload);
+                        ws.Cells[row, 5].Value = tc.PayloadType;
+                        ws.Cells[row, 6].Value = tc.ExpectedStatus;
+                        ws.Cells[row, 7].Value = ExtractMessage(tc.ExpectedResponse);
+                        row++;
+                    }
+                }
+
+                // =========================
+                // Final Excel Settings
+                // =========================
+                ws.View.FreezePanes(2, 1);
+                ws.Cells.Style.WrapText = true;
+
+                return File(
+                    package.GetAsByteArray(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "TestCases.xlsx"
+                );
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    message = "Error generating test cases.",
+                    error = ex.Message
+                });
             }
         }
+
+        // =========================
+        // Helper
+        // =========================
+        private static AIResponse BuildFallbackResponse(
+            List<ApiInfo> endpoints,
+            string error)
+        {
+            return new AIResponse
+            {
+                per_endpoint = endpoints.Select(e => new PerEndpoint
+                {
+                    endpoint = $"{e.url} {e.method}",
+                    testcases = new List<CopilotAIService.AIGeneratedTestCase>
+            {
+                new CopilotAIService.AIGeneratedTestCase
+                {
+                    TestCaseName = "AI Generation Failed",
+                    InputPayload = "{}",
+                    PayloadType = e.InputPayloadType.ToString(),
+                    ExpectedStatus = 500,
+                    ExpectedResponse = new { error }
+                }
+            }
+                }).ToList(),
+                scenario_tests = new List<CopilotAIService.AIGeneratedTestCase>()
+            };
+        }
+
 
         // Helper: try to parse method from returned endpoint string
         private static string ExtractMethodFromEndpointString(string ep)
@@ -1247,17 +1321,92 @@ namespace Test_Cases_Automation.Controllers
 
         private static string MakeInputPayloadString(ApiInfo ep)
         {
-            if (ep == null || ep.parameters == null || ep.parameters.Count == 0)
+            if (ep == null)
                 return "{}";
 
-            var pairs = ep.parameters.Select(p =>
+            // For body type, use SwaggerPayloadTemplate if available
+            if (ep.InputPayloadType == InputPayloadType.body && ep.SwaggerPayloadTemplate != null)
+            {
+                try
+                {
+                    return JsonConvert.SerializeObject(ep.SwaggerPayloadTemplate, Formatting.Indented);
+                }
+                catch
+                {
+                    // Fallback to parameters
+                }
+            }
+
+            // For query, path, or when template is not available
+            if (ep.parameters == null || ep.parameters.Count == 0)
+                return "{}";
+
+            // Group by source type
+            var bodyParams = ep.parameters.Where(p => p.source == "body").ToList();
+            var queryParams = ep.parameters.Where(p => p.source == "query").ToList();
+            var pathParams = ep.parameters.Where(p => p.source == "path").ToList();
+
+            // If we have body parameters, create JSON object
+            if (bodyParams.Any())
+            {
+                var pairs = bodyParams.Select(p =>
+                {
+                    var nameEscaped = p.name.Replace("\"", "\\\"");
+                    var typePreview = GetTypeExample(p.type);
+                    return $"\"{nameEscaped}\": {typePreview}";
+                });
+                return "{\n  " + string.Join(",\n  ", pairs) + "\n}";
+            }
+
+            // If we have query parameters, show them as key-value pairs
+            if (queryParams.Any())
+            {
+                var pairs = queryParams.Select(p =>
+                {
+                    var nameEscaped = p.name.Replace("\"", "\\\"");
+                    var typePreview = GetTypeExample(p.type);
+                    return $"\"{nameEscaped}\": {typePreview}";
+                });
+                return "{\n  " + string.Join(",\n  ", pairs) + "\n}";
+            }
+
+            // If we have path parameters
+            if (pathParams.Any())
+            {
+                var pairs = pathParams.Select(p =>
+                {
+                    var nameEscaped = p.name.Replace("\"", "\\\"");
+                    var typePreview = GetTypeExample(p.type);
+                    return $"\"{nameEscaped}\": {typePreview}";
+                });
+                return "{\n  " + string.Join(",\n  ", pairs) + "\n}";
+            }
+
+            // Fallback: all parameters
+            var allPairs = ep.parameters.Select(p =>
             {
                 var nameEscaped = p.name.Replace("\"", "\\\"");
-                var typePreview = p.type?.Replace("\"", "\\\"") ?? "string";
-                return $"\"{nameEscaped}\": \"{typePreview}\"";
+                var typePreview = GetTypeExample(p.type);
+                return $"\"{nameEscaped}\": {typePreview}";
             });
+            return "{\n  " + string.Join(",\n  ", allPairs) + "\n}";
+        }
 
-            return "{ " + string.Join(", ", pairs) + " }";
+        private static string GetTypeExample(string type)
+        {
+            if (string.IsNullOrWhiteSpace(type))
+                return "\"string\"";
+
+            return type.ToLower() switch
+            {
+                "string" => "\"string\"",
+                "integer" => "0",
+                "number" => "0.0",
+                "boolean" => "true",
+                "array" => "[]",
+                "object" => "{}",
+                _ => $"\"{type}\""
+            };
         }
 
 
@@ -1274,7 +1423,6 @@ namespace Test_Cases_Automation.Controllers
 
         public List<ApiParameterDto> parameters { get; set; } = new();
 
-        // 🔥 Only for BODY payloads
         public object SwaggerPayloadTemplate { get; set; }
     }
 
@@ -1313,6 +1461,12 @@ namespace Test_Cases_Automation.Controllers
     {
         public string endpoint { get; set; }
         public List<CopilotAIService.AIGeneratedTestCase> testcases { get; set; }
+    }
+
+    public class SwaggerGenerateRequestDto
+    {
+        public string SwaggerUrl { get; set; }
+        public string Mode { get; set; } 
     }
 
 
